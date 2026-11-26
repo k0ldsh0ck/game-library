@@ -98,6 +98,16 @@ textarea.in{height:auto;min-height:90px;padding:10px 12px;resize:vertical}
 .pick .art{border-radius:5px}
 .pick[aria-pressed=true] .art{box-shadow:0 0 0 3px var(--blue)}
 .pick small{display:block;font-size:11px;color:var(--mute);margin-top:4px;line-height:1.2;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.sugs{margin-top:6px;border:1px solid var(--line);border-radius:8px;background:var(--bg);overflow:hidden}
+.sugs:empty{display:none}
+.sug{display:flex;align-items:center;gap:10px;width:100%;border:0;background:none;padding:6px 10px;text-align:left;min-height:56px}
+.sug+.sug{border-top:1px solid var(--line)}
+.sug:hover,.sug:focus-visible{background:var(--panel2);outline:none}
+.sug .art{flex:0 0 34px;border-radius:3px;box-shadow:none}
+.sug .gen span{font-size:7px;left:3px;right:3px;bottom:3px}
+.sug b{display:block;font-weight:600;font-size:15px;line-height:1.25}
+.sug small{display:block;color:var(--mute);font-size:13px;line-height:1.25}
+.sugs .msg{padding:10px 12px;font-size:13px;color:var(--mute)}
 .cbtns{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .cbtns .btn{flex:1 1 100%;font-size:14px;height:40px}
 .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
@@ -167,22 +177,31 @@ function del(g){games.set(g.id,{id:g.id,deleted:true,updated:Date.now()});persis
 /* ---------- covers: Wikipedia search + Steam portrait art via Wikidata ---------- */
 const okURL=u=>typeof u==="string"&&(/^https:\/\//.test(u)||/^data:image\//.test(u));
 const steamArt=id=>[`https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/library_600x900_2x.jpg`,`https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/library_600x900.jpg`];
-async function findCovers(title){
+const cleanTitle=t=>String(t).replace(/\s*\((?:\d{4} )?(?:video )?game\)$/i,"").trim();
+async function wikiSearch(q,limit,strict){
   const w=new URL("https://en.wikipedia.org/w/api.php");
-  Object.entries({action:"query",format:"json",origin:"*",generator:"search",gsrsearch:title+" video game",gsrlimit:"6",gsrnamespace:"0",
-    prop:"pageimages|pageprops",piprop:"thumbnail",pithumbsize:"600",pilicense:"any",ppprop:"wikibase_item"}).forEach(([k,v])=>w.searchParams.set(k,v));
+  Object.entries({action:"query",format:"json",origin:"*",generator:"search",gsrsearch:strict?`${q} hastemplate:"Infobox video game"`:q+" video game",gsrlimit:String(limit),gsrnamespace:"0",
+    prop:"pageimages|pageprops|description",piprop:"thumbnail",pithumbsize:"600",pilicense:"any",ppprop:"wikibase_item"}).forEach(([k,v])=>w.searchParams.set(k,v));
   const j=await (await fetch(w)).json();
-  const pages=Object.values(j.query?.pages||{}).sort((a,b)=>a.index-b.index);
-  const qids=pages.map(p=>p.pageprops?.wikibase_item).filter(Boolean);
-  let steam={};
-  if(qids.length){try{const d=new URL("https://www.wikidata.org/w/api.php");
+  return Object.values(j.query?.pages||{}).sort((a,b)=>a.index-b.index)}
+async function steamIds(pages){const qids=pages.map(p=>p.pageprops?.wikibase_item).filter(Boolean),steam={};
+  if(!qids.length)return steam;
+  try{const d=new URL("https://www.wikidata.org/w/api.php");
     Object.entries({action:"wbgetentities",format:"json",origin:"*",props:"claims",ids:qids.join("|")}).forEach(([k,v])=>d.searchParams.set(k,v));
     const dj=await (await fetch(d)).json();
-    for(const [q,e] of Object.entries(dj.entities||{})){const v=e.claims?.P1733?.[0]?.mainsnak?.datavalue?.value;if(v&&/^\d+$/.test(v))steam[q]=v}}catch(e){}}
+    for(const [q,e] of Object.entries(dj.entities||{})){const v=e.claims?.P1733?.[0]?.mainsnak?.datavalue?.value;if(v&&/^\d+$/.test(v))steam[q]=v}}catch(e){}
+  return steam}
+// title suggestions: real games only (pages with a video-game infobox)
+async function suggestGames(q){const pages=await wikiSearch(q,8,true);const steam=await steamIds(pages);
+  return pages.map(p=>{const sid=steam[p.pageprops?.wikibase_item],thumb=okURL(p.thumbnail?.source)?p.thumbnail.source:null;
+    return {title:cleanTitle(p.title),desc:p.description||"",urls:[...(sid?steamArt(sid):[]),...(thumb?[thumb]:[])]}})}
+async function findCovers(title){
+  let pages=await wikiSearch(title,6,true);if(!pages.length)pages=await wikiSearch(title,6,false);
+  const steam=await steamIds(pages);
   const out=[];
   for(const p of pages){const sid=steam[p.pageprops?.wikibase_item],thumb=p.thumbnail?.source;
-    if(sid)out.push({name:p.title,src:"Steam",urls:[...steamArt(sid),...(thumb?[thumb]:[])]});
-    if(thumb&&okURL(thumb))out.push({name:p.title,src:"Wikipedia",urls:[thumb]})}
+    if(sid)out.push({name:cleanTitle(p.title),src:"Steam",urls:[...steamArt(sid),...(thumb?[thumb]:[])]});
+    if(thumb&&okURL(thumb))out.push({name:cleanTitle(p.title),src:"Wikipedia",urls:[thumb]})}
   return out}
 async function autoCover(g){try{const c=await findCovers(g.title);const cur=games.get(g.id);
   if(c.length&&cur&&!cur.deleted&&!(cur.covers&&cur.covers.length)&&!cur.coverData){put({...cur,covers:c[0].urls})}}catch(e){}}
@@ -265,9 +284,9 @@ function render(){
 }
 
 /* ---------- sheets ---------- */
-const scrim=$("#scrim"),sheet=$("#sheet");let draft=null,lastFocus=null,picks=[];
+const scrim=$("#scrim"),sheet=$("#sheet");let draft=null,lastFocus=null,picks=[],sugT=null,sugSeq=0,sugList=[];
 function open(html){lastFocus=document.activeElement;sheet.innerHTML=html;scrim.classList.add("on");setTimeout(()=>{const f=sheet.querySelector("[autofocus]")||sheet.querySelector(".x");f&&f.focus()},30)}
-function close(){scrim.classList.remove("on");draft=null;picks=[];lastFocus&&lastFocus.focus&&lastFocus.focus()}
+function close(){scrim.classList.remove("on");draft=null;picks=[];sugList=[];sugSeq++;clearTimeout(sugT);lastFocus&&lastFocus.focus&&lastFocus.focus()}
 const segP=v=>`<div class="seg s4" data-seg="platform">${PLAT.map(([k,l])=>`<button type="button" data-v="${k}" aria-pressed="${v===k}">${l}</button>`).join("")}</div>`;
 const segS=v=>`<div class="seg s4" data-seg="status">${STAT.map(([k,l,c])=>`<button type="button" data-v="${k}" aria-pressed="${v===k}" style="--c:var(${c})"><i></i>${l}</button>`).join("")}</div>`;
 const newGame=()=>({id:uid(),title:"",platform:ui.plat!=="all"?ui.plat:"pc",status:ui.stat!=="all"?ui.stat:"owned",added:Date.now(),notes:""});
@@ -277,7 +296,8 @@ function editor(g,isNew){
   open(`<div class="shead"><h3>${isNew?"Add a game":"Game details"}</h3><button class="x" data-act="close" aria-label="Close">×</button></div>
   <div class="detail"><div><div id="prev">${cardHTML(draft,false)}</div>
     <div class="cbtns"><button class="btn ghost" data-act="find">Find covers</button><button class="btn ghost" data-act="cover">Upload</button><button class="btn ghost" data-act="nocover">No cover</button></div></div>
-  <div><label class="f" for="t">Title</label><input class="in" id="t" value="${esc(draft.title)}" ${isNew?"autofocus":""} autocomplete="off" placeholder="e.g. Hades II">
+  <div><label class="f" for="t">Title</label><input class="in" id="t" value="${esc(draft.title)}" ${isNew?"autofocus":""} autocomplete="off" placeholder="Start typing a game…" role="combobox" aria-autocomplete="list" aria-controls="sugs" aria-expanded="false">
+    <div class="sugs" id="sugs" role="listbox"></div>
     <label class="f">Platform</label>${segP(draft.platform)}</div></div>
   <div id="pickWrap"></div>
   <label class="f">Status</label>${segS(draft.status)}
@@ -286,6 +306,20 @@ function editor(g,isNew){
   <div class="acts">${isNew?"":`<button class="btn danger" data-act="delete">Delete</button>`}<span class="grow"></span>
   <button class="btn ghost" data-act="close">Cancel</button><button class="btn pri" data-act="save">${isNew?"Add to library":"Save"}</button></div>`)}
 function refreshPrev(){draft.title=$("#t").value||"Untitled";$("#prev").innerHTML=cardHTML(draft,false)}
+function clearSugs(){const s=$("#sugs");if(s)s.innerHTML="";const t=$("#t");t&&t.setAttribute("aria-expanded","false");sugList=[]}
+function onTitleInput(){clearTimeout(sugT);const q=$("#t").value.trim();
+  if(draft._sugTitle&&q!==draft._sugTitle){draft.covers=[];draft._sugTitle=null;draft._auto=true;refreshPrev()}
+  if(q.length<2)return clearSugs();
+  sugT=setTimeout(async()=>{const my=++sugSeq;const box=$("#sugs");if(!box)return;
+    if(!sugList.length)box.innerHTML=`<div class="msg">Searching…</div>`;
+    let res;try{res=await suggestGames(q)}catch(e){if(my===sugSeq&&$("#sugs"))$("#sugs").innerHTML=`<div class="msg">Couldn’t search right now — you can still type the title.</div>`;return}
+    if(my!==sugSeq||!draft||!$("#sugs"))return;sugList=res;
+    $("#sugs").innerHTML=res.length?res.map((r,i)=>`<button type="button" class="sug" role="option" data-sug="${i}"><div class="art">${coverHTML({title:r.title,covers:r.urls})}</div><span><b>${esc(r.title)}</b>${r.desc?`<small>${esc(r.desc)}</small>`:""}</span></button>`).join("")
+      :`<div class="msg">No games found — keep typing, or just save with your own title.</div>`;
+    $("#t").setAttribute("aria-expanded",res.length?"true":"false")},350)}
+function pickSug(i){const r=sugList[i];if(!r||!draft)return;
+  $("#t").value=r.title;draft.covers=r.urls;delete draft.coverData;draft._auto=false;draft._sugTitle=r.title;clearTimeout(sugT);sugSeq++;clearSugs();refreshPrev();
+  $("#pickWrap").innerHTML="";toast("Matched "+r.title)}
 async function showPicks(){const t=$("#t").value.trim();if(!t){$("#t").focus();return toast("Type the title first")}
   const w=$("#pickWrap");w.innerHTML=`<label class="f">Covers</label><p class="hint">Searching…</p>`;
   try{picks=await findCovers(t)}catch(e){picks=[]}
@@ -318,7 +352,7 @@ function settings(){open(`<div class="shead"><h3>Sync &amp; backup</h3><button c
 async function resize(file){const bmp=await createImageBitmap(file);const W=300,H=450,c=document.createElement("canvas");c.width=W;c.height=H;
   const s=Math.max(W/bmp.width,H/bmp.height),w=bmp.width*s,h=bmp.height*s;c.getContext("2d").drawImage(bmp,(W-w)/2,(H-h)/2,w,h);return c.toDataURL("image/jpeg",.82)}
 $("#file").addEventListener("change",async e=>{const f=e.target.files[0];e.target.value="";if(!f||!draft)return;
-  try{draft.coverData=await resize(f);draft.covers=[];draft._auto=false;refreshPrev();toast("Cover added")}catch(err){toast("Couldn’t use that image")}});
+  try{draft.coverData=await resize(f);draft.covers=[];draft._auto=false;draft._sugTitle=null;refreshPrev();toast("Cover added")}catch(err){toast("Couldn’t use that image")}});
 $("#importFile").addEventListener("change",async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
   try{const d=JSON.parse(await f.text());const arr=Array.isArray(d)?d:d.games;if(!Array.isArray(arr))throw 0;
     Sync.merge(arr.filter(g=>g&&typeof g.id==="string"));persist();render();toast("Library imported")}catch(err){toast("That file isn’t a Game Library backup")}});
@@ -333,6 +367,7 @@ document.addEventListener("click",async e=>{
   if(t.dataset.p){ui.plat=t.dataset.p;saveUI();return render()}
   if(t.dataset.s){ui.stat=t.dataset.s;saveUI();return render()}
   if(t.classList.contains("card")&&!sheet.contains(t)){const g=games.get(t.dataset.id);return g&&!g.deleted&&editor(g,false)}
+  if(t.dataset.sug&&draft)return pickSug(+t.dataset.sug);
   if(t.dataset.pick&&draft){const p=picks[+t.dataset.pick];draft.covers=p.urls;delete draft.coverData;draft._auto=false;
     sheet.querySelectorAll(".pick").forEach(b=>b.setAttribute("aria-pressed",b===t));return refreshPrev()}
   if(t.dataset.v&&draft){const seg=t.parentElement;draft[seg.dataset.seg]=t.dataset.v;seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-pressed",b===t));if(!draft._bulk)refreshPrev();return}
@@ -345,7 +380,7 @@ document.addEventListener("click",async e=>{
   if(a==="cover")return $("#file").click();
   if(a==="nocover"){draft.covers=[];delete draft.coverData;draft._auto=false;return refreshPrev()}
   if(a==="save"){const title=$("#t").value.trim();if(!title){$("#t").focus();return toast("Give the game a title")}
-    const {_new,_auto,...g}=draft;g.title=title;g.notes=$("#n").value.trim();put(g);close();
+    const {_new,_auto,_sugTitle,...g}=draft;g.title=title;g.notes=$("#n").value.trim();put(g);close();
     if(_auto&&!(g.covers&&g.covers.length)&&!g.coverData)autoCover(g);
     return toast(_new?`Added ${title}`:"Saved")}
   if(a==="delete"){if(t.dataset.sure){const g=games.get(draft.id);close();if(g){del(g);toast(`Deleted ${g.title}`)}}else{t.dataset.sure=1;t.textContent="Tap again to delete"}return}
@@ -366,13 +401,15 @@ document.addEventListener("click",async e=>{
     const u=URL.createObjectURL(b),l=document.createElement("a");l.href=u;l.download=`game-library-${new Date().toISOString().slice(0,10)}.json`;document.body.appendChild(l);l.click();l.remove();setTimeout(()=>URL.revokeObjectURL(u),2000);return}
   if(a==="import")return $("#importFile").click();
 });
-document.addEventListener("input",e=>{if(e.target.id==="q"){ui.q=e.target.value;render()}if(e.target.id==="t"&&draft)refreshPrev()});
+document.addEventListener("input",e=>{if(e.target.id==="q"){ui.q=e.target.value;render()}if(e.target.id==="t"&&draft){refreshPrev();onTitleInput()}});
 $("#sort").addEventListener("change",e=>{ui.sort=e.target.value;saveUI();render()});
 $("#addBtn").addEventListener("click",()=>editor(newGame(),true));
 $("#fab").addEventListener("click",()=>editor(newGame(),true));
 $("#setBtn").addEventListener("click",settings);
 scrim.addEventListener("click",e=>{if(e.target===scrim)close()});
 document.addEventListener("keydown",e=>{
+  if(e.target.id==="t"&&e.key==="Enter"&&sugList.length){e.preventDefault();return pickSug(0)}
+  if(e.key==="Escape"&&sugList.length){return clearSugs()}
   if(e.key==="Escape"&&scrim.classList.contains("on"))return close();
   const c=document.activeElement;if(!c||!c.classList.contains("card")||scrim.classList.contains("on"))return;
   const box=c.parentElement,items=[...box.children],i=items.indexOf(c),g=box.classList.contains("grid");
